@@ -23,7 +23,6 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/workqueue.h>
-
 #include <linux/i2c.h>
 #include <linux/gpio.h>
 #include <linux/input.h>
@@ -46,6 +45,14 @@ static void mcs8000_early_suspend(struct early_suspend *h);
 static void mcs8000_late_resume(struct early_suspend *h);
 #endif
 
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+#ifdef CONFIG_TOUCHSCREEN_SWEEP2WAKE
+#include <linux/input/sweep2wake.h>
+#endif
+#ifdef CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE
+#include <linux/input/doubletap2wake.h>
+#endif
+#endif
 
 //static int mcs8000_ts_off(void);
 int mcs8000_ts_on(void);
@@ -80,7 +87,7 @@ static void Release_All_Fingers(void);
 #define TS_READ_START_ADDR 								0x0F
 #define TS_READ_START_ADDR2 							0x10
 
-#if 0	//  woden.lee@lge.com [2013-03-22] => previous TS Firmware was reverted.
+#if 1	//  woden@lge.com [2013-02-26] => New TS Firmware was applied.
 #define TS_LATEST_FW_VERSION_EU_SUN	0x16
 #define TS_LATEST_FW_VERSION_EU_INO	0x20
 #else
@@ -101,7 +108,9 @@ static void Release_All_Fingers(void);
 #define	SET_DOWNLOAD_BY_GPIO							1
 #define GPIO_TOUCH_ID 121
 
+#if defined(CONFIG_MACH_MSM7X25A_V3_DS) || defined(CONFIG_MACH_MSM7X25A_V1)
 #define KEY_SIM_SWITCH 223
+#endif
 
 int power_flag=0;
 static int irq_flag;
@@ -457,7 +466,7 @@ Touchscreen doesn't work*/
 				#endif
 				/* 2012-10-08 JongWook-Park(blood9874@lge.com) [V3] Melfas mms-128s TSD patch [END] */
 
-				#if defined(CONFIG_MACH_MSM7X25A_V3_DS)
+#if defined(CONFIG_MACH_MSM7X25A_V3_DS) || defined(CONFIG_MACH_MSM7X25A_V1)
 				/* 2012-09-25 JongWook-Park(blood9874@lge.com) [V3] Bring up V3 mms-128s touch [START] */ 
 				switch(keyID)
 				{
@@ -479,7 +488,7 @@ Touchscreen doesn't work*/
 						break;					
 				}
 				/* 2012-09-25 JongWook-Park(blood9874@lge.com) [V3] Bring up V3 mms-128s touch [END] */ 
-				#else
+#else
 				/* 2012-10-23 JongWook-Park(blood9874@lge.com) [V3] Single Touch Bring Up [START] */ 
 				#if 0
 				if (keyID == 0x1)
@@ -493,7 +502,7 @@ Touchscreen doesn't work*/
 					input_report_key(ts->input_dev, KEY_MENU, touchState ? PRESS_KEY : RELEASE_KEY);
 				#endif
 				/* 2012-10-23 JongWook-Park(blood9874@lge.com) [V3] Single Touch Bring Up [END] */ 
-				#endif
+#endif
 				/* LGE_CHANGE_E: E1 yongboem.kim@lge.com [2012-01-10] : for Rev.A Touch Key */
 			}
 		}
@@ -852,7 +861,7 @@ static int mcs8000_ts_probe(struct i2c_client *client, const struct i2c_device_i
 	 * So, I will change this to request_threaded_irq()
 	 */
 	err = request_threaded_irq(dev->num_irq, NULL, mcs8000_ts_irq_handler,
-			IRQF_TRIGGER_LOW | IRQF_ONESHOT, "mcs8000_ts", dev);
+			IRQF_TRIGGER_LOW | IRQF_ONESHOT | IRQF_NO_SUSPEND, "mcs8000_ts", dev);
 	
 	if (err < 0) {
 		printk(KERN_ERR "%s: request_irq failed\n", __FUNCTION__);
@@ -991,11 +1000,25 @@ static void mcs8000_early_suspend(struct early_suspend *h)
 	int ret=0;
 	struct mcs8000_ts_device *dev = &mcs8000_ts_dev;
 
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	bool prevent_sleep = false;
+#endif
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
+	prevent_sleep = (s2w_switch > 0) && (s2w_s2sonly == 0);
+#endif
+#if defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	prevent_sleep = prevent_sleep || (dt2w_switch > 0);
+#endif
 		//mcs8000_Data_Clear(); 
 
 		DMSG(KERN_INFO"%s: start! \n", __FUNCTION__);
 		if (irq_flag == 1) {
 			irq_flag--;	
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+			if (prevent_sleep)
+				enable_irq_wake(dev->num_irq);
+			else
+#endif
 			disable_irq(dev->num_irq);
 			DMSG("%s: irq disable\n", __FUNCTION__);
 		}
@@ -1004,6 +1027,9 @@ static void mcs8000_early_suspend(struct early_suspend *h)
 		Release_All_Fingers();
 		if(power_flag==1){
 			power_flag--;
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+			if (!prevent_sleep)
+#endif
 			dev->power(OFF);
 		}	
 	
@@ -1013,16 +1039,33 @@ static void mcs8000_late_resume(struct early_suspend *h)
 {
 	struct mcs8000_ts_device *dev = &mcs8000_ts_dev;
 
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	bool prevent_sleep = false;
+#endif
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
+	prevent_sleep = (s2w_switch > 0) && (s2w_s2sonly == 0);
+#endif
+#if defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+	prevent_sleep = prevent_sleep || (dt2w_switch > 0);
+#endif
 	
 		DMSG(KERN_INFO"%s: start! \n", __FUNCTION__);
 		
 		if(power_flag==0){
 			power_flag++;
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+			if (!prevent_sleep)
+#endif
 			dev->power(ON);
 		}
 		
 		if (irq_flag == 0) {
 			irq_flag++;
+#if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+			if (!prevent_sleep)
+				disable_irq_wake(dev->num_irq);
+			else
+#endif
 			enable_irq(dev->num_irq);
 			DMSG("%s: irq enable\n", __FUNCTION__);
 		}
@@ -1085,7 +1128,7 @@ static int __devinit mcs8000_ts_init(void)
 	#else
 		mcs8000_ts_input->keybit[BIT_WORD(KEY_BACK)] |= BIT_MASK(KEY_BACK);
 		mcs8000_ts_input->keybit[BIT_WORD(KEY_MENU)] |= BIT_MASK(KEY_MENU);
-#if defined(CONFIG_MACH_MSM7X25A_V3_DS)    
+#if defined(CONFIG_MACH_MSM7X25A_V3_DS) || defined(CONFIG_MACH_MSM7X25A_V1)
 		mcs8000_ts_input->keybit[BIT_WORD(KEY_HOMEPAGE)] |= BIT_MASK(KEY_HOMEPAGE);
 		mcs8000_ts_input->keybit[BIT_WORD(KEY_SIM_SWITCH)] |= BIT_MASK(KEY_SIM_SWITCH);
 #endif
